@@ -1,0 +1,23 @@
+# ========================================
+# Adaptive Memory System - Dependencies
+# Author: Jiangsheng Yu
+# ========================================
+
+# === Core: LLM & Transformers ===
+transformers>=4.37.0
+torch>=2.0.0
+accelerate>=0.25.0
+sentencepiece>=0.1.99
+
+# === Database ===
+sqlalchemy>=2.0.0
+
+# === NLP: 中文分词与关键词提取 ===
+jieba>=0.42.0
+
+# === Semantic Search (可选，用于记忆检索) ===
+sentence-transformers>=2.2.0
+numpy>=1.24.0
+
+# === 量化支持 (可选，节省显存) ===
+# bitsandbytes>=0.41.0  # 仅 Linux/CUDA
