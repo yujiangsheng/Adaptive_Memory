@@ -4,8 +4,14 @@
 
 使用 SQLite 实现记忆的持久化存储，支持:
     - CRUD 操作 (创建、读取、更新、删除)
-    - 关键词搜索
-    - 语义搜索 (基于嵌入向量的余弦相似度)
+    - 三路混合检索 (语义 + 关键词 + 文本直匹配，并行执行后合并去重)
+    - 嵌入向量持久化 (bge-small-zh-v1.5)
+
+检索策略 (retrieve_relevant_memories):
+    1. 语义搜索 — 查询向量与记忆嵌入的余弦相似度 ≥ 阈值
+    2. 关键词搜索 — jieba 分词后与记忆主题词做交集
+    3. 文本直匹配 — 关键词在摘要中直接出现
+    三路结果合并去重，语义优先，截取前 limit 条返回。
 
 数据库结构:
     memories 表:
@@ -31,7 +37,7 @@ Usage:
     ... )
     >>> db.save_memory(mem)
     >>> 
-    >>> # 检索相关记忆
+    >>> # 检索相关记忆 (三路混合)
     >>> results = db.retrieve_relevant_memories("编程语言")
 
 Author: Jiangsheng Yu
@@ -43,7 +49,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 from sqlalchemy import create_engine, Column, String, Text, DateTime, Integer, Float, LargeBinary
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
 from models import Memory
@@ -265,11 +271,55 @@ class MemoryDatabase:
             session.close()
     
     def retrieve_relevant_memories(self, query: str, limit: int = None) -> List[Memory]:
-        """检索与查询相关的记忆"""
+        """检索与查询相关的记忆（三路混合检索）。
+
+        执行语义搜索、关键词匹配、文本直匹配三路并行搜索，
+        结果合并去重后按优先级排序：语义 > 关键词 > 文本。
+
+        Args:
+            query: 用户查询文本
+            limit: 返回结果数量上限，默认使用配置值
+
+        Returns:
+            相关记忆列表，最多 limit 条
+        """
         limit = limit or self.config.max_retrieved_memories
-        
-        results = self.search_by_semantic(query, limit)
-        return [memory for memory, _ in results]
+
+        # 提取查询关键词
+        import jieba
+        keywords = [w for w in jieba.cut(query) if len(w) > 1]
+
+        # 1. 语义搜索
+        sem_results = self.search_by_semantic(query, limit)
+        sem_memories = [memory for memory, _ in sem_results]
+        seen_ids = {m.id for m in sem_memories}
+
+        # 2. 关键词搜索（始终执行，结果追加到语义结果之后）
+        kw_extra = []
+        if keywords:
+            kw_results = self.search_by_keywords(keywords, limit)
+            for m in kw_results:
+                if m.id not in seen_ids:
+                    kw_extra.append(m)
+                    seen_ids.add(m.id)
+
+        # 3. 文本直匹配（始终执行）
+        text_extra = []
+        if keywords:
+            session = self._get_session()
+            try:
+                all_records = session.query(MemoryRecord).all()
+                for record in all_records:
+                    if record.id not in seen_ids:
+                        if any(kw in record.summary for kw in keywords):
+                            text_extra.append(record.to_memory())
+                            seen_ids.add(record.id)
+            finally:
+                session.close()
+
+        # 合并：语义优先，关键词和文本匹配补充，截取前 limit 条
+        memories = sem_memories + kw_extra + text_extra
+        return memories[:limit]
     
     def get_all_memories(self) -> List[Memory]:
         """获取所有记忆"""

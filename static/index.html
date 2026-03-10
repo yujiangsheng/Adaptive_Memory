@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自适应记忆系统 — Adaptive Memory</title>
+<style>
+/* ─── Reset & Base ─────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0f1117;--surface:#1a1d27;--surface2:#232733;--border:#2e3340;
+  --text:#e4e6eb;--text2:#9ca3af;--accent:#6366f1;--accent2:#818cf8;
+  --green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316;
+  --blue:#3b82f6;
+}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text)}
+button{cursor:pointer;border:none;font-family:inherit}
+input,textarea{font-family:inherit}
+
+/* ─── Layout ───────────────────────────────────── */
+.app{display:flex;height:100vh;overflow:hidden}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.sidebar{width:340px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;transition:width .2s}
+.sidebar.collapsed{width:0;overflow:hidden;border:none}
+
+/* ─── Header ───────────────────────────────────── */
+.header{
+  background:var(--surface);border-bottom:1px solid var(--border);
+  padding:12px 20px;display:flex;align-items:center;gap:12px;
+  flex-shrink:0;
+}
+.header h1{font-size:16px;font-weight:600;white-space:nowrap}
+.header .logo{font-size:20px}
+.header-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+
+/* context meter */
+.context-meter{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2)}
+.meter-bar{width:140px;height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;position:relative}
+.meter-fill{height:100%;border-radius:4px;transition:width .4s ease,background .4s ease}
+.meter-fill.low{background:var(--green)}
+.meter-fill.mid{background:var(--yellow)}
+.meter-fill.high{background:var(--orange)}
+.meter-fill.critical{background:var(--red)}
+.meter-label{min-width:100px;text-align:right;font-variant-numeric:tabular-nums}
+
+/* buttons */
+.icon-btn{
+  width:32px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  background:transparent;color:var(--text2);font-size:16px;transition:all .15s;
+}
+.icon-btn:hover{background:var(--surface2);color:var(--text)}
+
+/* ─── Chat Area ────────────────────────────────── */
+.chat-area{flex:1;overflow-y:auto;padding:20px 0;scroll-behavior:smooth}
+.chat-area::-webkit-scrollbar{width:6px}
+.chat-area::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+.messages{max-width:780px;margin:0 auto;padding:0 20px}
+
+.msg{display:flex;gap:12px;margin-bottom:20px;animation:fadeIn .25s ease}
+.msg.user{flex-direction:row-reverse}
+.msg-avatar{
+  width:32px;height:32px;border-radius:8px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:14px;
+}
+.msg.user .msg-avatar{background:var(--accent);color:#fff}
+.msg.assistant .msg-avatar{background:var(--surface2);color:var(--accent2)}
+.msg-body{max-width:70%}
+.msg-content{
+  padding:10px 14px;border-radius:12px;line-height:1.7;font-size:14px;
+  white-space:pre-wrap;word-break:break-word;
+}
+.msg.user .msg-content{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.msg.assistant .msg-content{background:var(--surface2);border-bottom-left-radius:4px}
+
+/* thinking bubble */
+.thinking-bubble{
+  font-size:12px;color:var(--text2);background:var(--surface);
+  border:1px solid var(--border);border-radius:8px;padding:8px 12px;
+  margin-bottom:6px;line-height:1.6;
+}
+.thinking-bubble summary{cursor:pointer;color:var(--accent2);font-weight:500}
+
+/* streaming indicator */
+.streaming .msg-content::after{content:"▍";animation:blink .8s infinite}
+@keyframes blink{50%{opacity:0}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* welcome */
+.welcome{text-align:center;padding:60px 20px;color:var(--text2)}
+.welcome h2{font-size:22px;color:var(--text);margin-bottom:8px}
+.welcome p{font-size:14px;max-width:460px;margin:0 auto;line-height:1.6}
+
+/* compression notification */
+.compression-toast{
+  max-width:780px;margin:0 auto 16px;padding:10px 14px;
+  background:rgba(99,102,241,.1);border:1px solid rgba(99,102,241,.25);
+  border-radius:8px;font-size:12px;color:var(--accent2);display:flex;align-items:center;gap:8px;
+  animation:fadeIn .3s ease;
+}
+
+/* ─── Input Area ───────────────────────────────── */
+.input-area{
+  border-top:1px solid var(--border);background:var(--surface);
+  padding:14px 20px;flex-shrink:0;
+}
+.input-wrapper{
+  max-width:780px;margin:0 auto;display:flex;gap:10px;align-items:flex-end;
+}
+.input-wrapper textarea{
+  flex:1;resize:none;padding:10px 14px;border-radius:10px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:14px;line-height:1.5;
+  min-height:42px;max-height:160px;outline:none;transition:border-color .15s;
+}
+.input-wrapper textarea:focus{border-color:var(--accent)}
+.input-wrapper textarea::placeholder{color:var(--text2)}
+.send-btn{
+  width:42px;height:42px;border-radius:10px;background:var(--accent);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+  transition:opacity .15s;flex-shrink:0;
+}
+.send-btn:disabled{opacity:.4;cursor:not-allowed}
+.send-btn:not(:disabled):hover{opacity:.85}
+
+/* ─── Sidebar ──────────────────────────────────── */
+.sidebar-header{
+  padding:12px 16px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;
+}
+.sidebar-header h3{font-size:14px;font-weight:600}
+.sidebar-tabs{display:flex;border-bottom:1px solid var(--border)}
+.sidebar-tab{
+  flex:1;padding:10px 0;text-align:center;font-size:13px;font-weight:500;
+  background:transparent;color:var(--text2);border-bottom:2px solid transparent;
+  transition:all .15s;
+}
+.sidebar-tab.active{color:var(--accent2);border-bottom-color:var(--accent)}
+.sidebar-tab:hover{color:var(--text)}
+
+.sidebar-content{flex:1;overflow-y:auto;padding:12px 16px}
+.sidebar-content::-webkit-scrollbar{width:4px}
+.sidebar-content::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* memory card */
+.memory-card{
+  background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  padding:10px 12px;margin-bottom:10px;font-size:12px;line-height:1.6;
+  transition:border-color .15s;
+}
+.memory-card:hover{border-color:var(--accent)}
+.memory-card .mem-time{color:var(--text2);font-size:11px;margin-bottom:4px}
+.memory-card .mem-summary{color:var(--text)}
+.memory-card .mem-keywords{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+.mem-tag{
+  background:rgba(99,102,241,.15);color:var(--accent2);padding:2px 8px;
+  border-radius:4px;font-size:11px;
+}
+.memory-card .mem-actions{margin-top:6px;text-align:right}
+.mem-del-btn{
+  background:transparent;color:var(--text2);font-size:11px;padding:2px 6px;
+  border-radius:4px;transition:all .15s;
+}
+.mem-del-btn:hover{background:rgba(239,68,68,.15);color:var(--red)}
+
+/* stats panel */
+.stat-row{display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border)}
+.stat-row:last-child{border:none}
+.stat-label{color:var(--text2)}
+.stat-value{font-weight:500;font-variant-numeric:tabular-nums}
+
+/* active memories */
+.active-mem-section{margin-bottom:16px}
+.active-mem-section h4{font-size:12px;color:var(--accent2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
+.active-badge{
+  display:inline-block;background:rgba(34,197,94,.15);color:var(--green);
+  padding:1px 6px;border-radius:4px;font-size:10px;margin-left:6px;
+}
+
+/* empty state */
+.empty-state{text-align:center;color:var(--text2);padding:40px 0;font-size:13px}
+
+/* ─── Eval Panel ───────────────────────────────── */
+.eval-controls{display:flex;gap:8px;align-items:center;margin-bottom:14px}
+.eval-controls label{font-size:13px;color:var(--text2);white-space:nowrap}
+.eval-controls input[type=number]{
+  width:60px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:13px;text-align:center;
+  outline:none;-moz-appearance:textfield;
+}
+.eval-controls input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+.eval-btn{
+  padding:6px 14px;border-radius:6px;font-size:13px;font-weight:500;
+  background:var(--accent);color:#fff;transition:opacity .15s;margin-left:auto;
+}
+.eval-btn:disabled{opacity:.4;cursor:not-allowed}
+.eval-btn:not(:disabled):hover{opacity:.85}
+
+/* progress */
+.eval-progress{margin-bottom:14px}
+.eval-phase{font-size:12px;color:var(--accent2);font-weight:500;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.eval-bar-bg{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-bottom:4px}
+.eval-bar{height:100%;background:var(--accent);border-radius:3px;transition:width .3s ease}
+.eval-pct{font-size:11px;color:var(--text2);text-align:right;font-variant-numeric:tabular-nums}
+
+/* live log */
+.eval-log{
+  max-height:180px;overflow-y:auto;font-size:11px;line-height:1.7;
+  background:var(--bg);border-radius:6px;padding:8px 10px;margin-bottom:14px;
+  border:1px solid var(--border);
+}
+.eval-log::-webkit-scrollbar{width:4px}
+.eval-log::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.eval-log-turn{color:var(--text2)}
+.eval-log-ok{color:var(--green)}
+.eval-log-fail{color:var(--red)}
+.eval-log-compress{color:var(--orange)}
+
+/* report card */
+.eval-report{
+  background:var(--surface2);border-radius:8px;border:1px solid var(--border);
+  padding:14px;margin-bottom:14px;
+}
+.eval-report h4{font-size:14px;margin-bottom:10px;color:var(--text);display:flex;align-items:center;gap:6px}
+.eval-score{
+  font-size:32px;font-weight:700;text-align:center;margin:10px 0;
+  font-variant-numeric:tabular-nums;
+}
+.eval-score.perfect{color:var(--green)}
+.eval-score.good{color:var(--accent2)}
+.eval-score.mid{color:var(--yellow)}
+.eval-score.low{color:var(--red)}
+.eval-meta{display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;margin-bottom:10px}
+.eval-meta-item{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)}
+.eval-meta-label{color:var(--text2)}
+.eval-meta-value{font-weight:500;font-variant-numeric:tabular-nums}
+
+/* decay chart */
+.eval-decay{display:flex;gap:6px;margin:10px 0}
+.eval-decay-col{flex:1;text-align:center}
+.eval-decay-bar-bg{height:60px;background:var(--bg);border-radius:4px;position:relative;overflow:hidden;margin-bottom:4px}
+.eval-decay-bar{position:absolute;bottom:0;left:0;right:0;border-radius:4px;transition:height .5s ease}
+.eval-decay-label{font-size:10px;color:var(--text2)}
+.eval-decay-pct{font-size:12px;font-weight:600;margin-bottom:2px}
+
+/* result list */
+.eval-results-toggle{
+  font-size:12px;color:var(--accent2);background:transparent;
+  cursor:pointer;margin-bottom:8px;display:flex;align-items:center;gap:4px;
+}
+.eval-result-item{
+  font-size:12px;padding:6px 8px;border-radius:6px;margin-bottom:4px;line-height:1.6;
+  background:var(--bg);border:1px solid var(--border);
+}
+.eval-result-item.hit{border-left:3px solid var(--green)}
+.eval-result-item.miss{border-left:3px solid var(--red)}
+.eval-result-key{font-weight:500;color:var(--text)}
+.eval-result-val{color:var(--text2);margin-left:4px}
+.eval-result-resp{color:var(--text2);font-size:11px;margin-top:2px;word-break:break-all}
+
+/* pool preview table */
+.eval-pool-table-wrap{max-height:calc(100vh - 200px);overflow-y:auto;border:1px solid var(--border);border-radius:8px}
+.eval-pool-table{width:100%;border-collapse:collapse;font-size:12px}
+.eval-pool-table th{position:sticky;top:0;background:var(--bg);padding:6px 8px;text-align:left;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border)}
+.eval-pool-table td{padding:5px 8px;border-bottom:1px solid var(--border);color:var(--text1);line-height:1.5}
+.eval-pool-table tr:hover td{background:rgba(255,255,255,.03)}
+
+/* ─── Responsive ───────────────────────────────── */
+@media(max-width:768px){
+  .sidebar{position:fixed;right:0;top:0;bottom:0;width:300px;z-index:100;box-shadow:-4px 0 20px rgba(0,0,0,.4)}
+  .sidebar.collapsed{width:0}
+  .msg-body{max-width:85%}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ─── Main ──────────────────────────────────── -->
+  <div class="main">
+    <!-- Header -->
+    <div class="header">
+      <span class="logo">🧠</span>
+      <h1>自适应记忆系统</h1>
+
+      <div class="header-right">
+        <!-- Context Meter -->
+        <div class="context-meter">
+          <div class="meter-bar"><div class="meter-fill low" id="meterFill" style="width:0%"></div></div>
+          <span class="meter-label" id="meterLabel">0 / 32768 tokens</span>
+        </div>
+
+        <button class="icon-btn" title="清空对话" onclick="clearContext()">🗑️</button>
+        <button class="icon-btn" id="sidebarToggle" title="记忆面板" onclick="toggleSidebar()">📋</button>
+      </div>
+    </div>
+
+    <!-- Chat -->
+    <div class="chat-area" id="chatArea">
+      <div class="messages" id="messages">
+        <div class="welcome" id="welcome">
+          <h2>🧠 自适应记忆系统</h2>
+          <p>I can remember everything — 在长对话中，系统会自动压缩旧上下文为记忆并存储，确保模型始终拥有完整的对话历史。</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input -->
+    <div class="input-area">
+      <div class="input-wrapper">
+        <textarea id="userInput" placeholder="输入消息... (Enter 发送, Shift+Enter 换行)" rows="1"></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Sidebar ────────────────────────────────── -->
+  <div class="sidebar collapsed" id="sidebar">
+    <div class="sidebar-header">
+      <span>📋</span>
+      <h3>记忆 & 状态</h3>
+    </div>
+    <div class="sidebar-tabs">
+      <button class="sidebar-tab active" data-tab="memories" onclick="switchTab('memories')">记忆库</button>
+      <button class="sidebar-tab" data-tab="eval" onclick="switchTab('eval')">记忆测试</button>
+      <button class="sidebar-tab" data-tab="stats" onclick="switchTab('stats')">统计</button>
+    </div>
+    <div class="sidebar-content" id="sidebarContent">
+      <!-- dynamic content -->
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────
+let isStreaming = false;
+let currentTab = "memories";
+
+// ─── DOM Refs ─────────────────────────────────────
+const messagesEl  = document.getElementById("messages");
+const chatArea    = document.getElementById("chatArea");
+const userInput   = document.getElementById("userInput");
+const sendBtn     = document.getElementById("sendBtn");
+const meterFill   = document.getElementById("meterFill");
+const meterLabel  = document.getElementById("meterLabel");
+const sidebar     = document.getElementById("sidebar");
+const sidebarContent = document.getElementById("sidebarContent");
+const welcomeEl   = document.getElementById("welcome");
+
+// ─── Input handling ───────────────────────────────
+userInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+userInput.addEventListener("input", () => {
+  userInput.style.height = "auto";
+  userInput.style.height = Math.min(userInput.scrollHeight, 160) + "px";
+});
+
+// ─── Send Message ─────────────────────────────────
+async function sendMessage() {
+  const text = userInput.value.trim();
+  if (!text || isStreaming) return;
+
+  // hide welcome
+  if (welcomeEl) welcomeEl.style.display = "none";
+
+  // render user bubble
+  appendMessage("user", text);
+  userInput.value = "";
+  userInput.style.height = "auto";
+
+  isStreaming = true;
+  sendBtn.disabled = true;
+
+  // prepare assistant bubble
+  const {msgEl, contentEl} = appendMessage("assistant", "", true);
+
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({message: text}),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      // parse SSE
+      const lines = buffer.split("\n");
+      buffer = lines.pop(); // keep incomplete line
+
+      let eventType = null;
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith("data: ") && eventType) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            handleSSE(eventType, data, msgEl, contentEl);
+          } catch (_) {}
+          eventType = null;
+        }
+      }
+    }
+  } catch (err) {
+    contentEl.textContent = "⚠️ 请求失败: " + err.message;
+  }
+
+  msgEl.classList.remove("streaming");
+  isStreaming = false;
+  sendBtn.disabled = false;
+  userInput.focus();
+}
+
+// ─── Handle SSE events ───────────────────────────
+function handleSSE(event, data, msgEl, contentEl) {
+  switch (event) {
+    case "thinking": {
+      // show thinking details & active memories
+      if (data.log) {
+        const details = document.createElement("details");
+        details.className = "thinking-bubble";
+        details.innerHTML = `<summary>💭 思考过程</summary><pre style="margin-top:6px;white-space:pre-wrap;font-size:11px">${escapeHtml(data.log)}</pre>`;
+        msgEl.querySelector(".msg-body").insertBefore(details, contentEl);
+      }
+      if (data.compressed) {
+        const toast = document.createElement("div");
+        toast.className = "compression-toast";
+        toast.innerHTML = "🗜️ 已触发上下文压缩，旧对话已转为长期记忆";
+        messagesEl.insertBefore(toast, msgEl);
+      }
+      // refresh memories sidebar
+      if (currentTab === "memories") loadMemories();
+      break;
+    }
+    case "token": {
+      contentEl.textContent += data.text;
+      scrollToBottom();
+      break;
+    }
+    case "context": {
+      updateMeter(data);
+      break;
+    }
+    case "done": {
+      // final
+      break;
+    }
+    case "error": {
+      contentEl.textContent = "⚠️ " + data.message;
+      break;
+    }
+  }
+}
+
+// ─── Render helpers ──────────────────────────────
+function appendMessage(role, text, streaming = false) {
+  const msgEl = document.createElement("div");
+  msgEl.className = `msg ${role}` + (streaming ? " streaming" : "");
+
+  const avatar = role === "user" ? "👤" : "🤖";
+  msgEl.innerHTML = `
+    <div class="msg-avatar">${avatar}</div>
+    <div class="msg-body">
+      <div class="msg-content"></div>
+    </div>`;
+
+  const contentEl = msgEl.querySelector(".msg-content");
+  contentEl.textContent = text;
+
+  messagesEl.appendChild(msgEl);
+  scrollToBottom();
+  return {msgEl, contentEl};
+}
+
+function scrollToBottom() {
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ─── Context Meter ───────────────────────────────
+function updateMeter(info) {
+  const cur = info.current_tokens || 0;
+  const max = info.max_tokens || 32768;
+  const pct = Math.min(cur / max * 100, 100);
+
+  meterFill.style.width = pct + "%";
+  meterFill.className = "meter-fill " +
+    (pct < 50 ? "low" : pct < 75 ? "mid" : pct < 90 ? "high" : "critical");
+  meterLabel.textContent = `${cur.toLocaleString()} / ${max.toLocaleString()} tokens (${pct.toFixed(1)}%)`;
+}
+
+// ─── Sidebar ─────────────────────────────────────
+function toggleSidebar() {
+  sidebar.classList.toggle("collapsed");
+  if (!sidebar.classList.contains("collapsed")) {
+    currentTab === "memories" ? loadMemories() : loadStats();
+  }
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll(".sidebar-tab").forEach(t =>
+    t.classList.toggle("active", t.dataset.tab === tab));
+  if (tab === "memories") loadMemories();
+  else if (tab === "stats") loadStats();
+  else if (tab === "eval") loadEvalPanel();
+}
+
+async function loadMemories() {
+  try {
+    const [memoriesResp, contextResp] = await Promise.all([
+      fetch("/api/memories"),
+      fetch("/api/context"),
+    ]);
+    const memories = await memoriesResp.json();
+    const context = await contextResp.json();
+
+    let html = "";
+
+    // active memories
+    if (context.active_memories > 0) {
+      html += `<div class="active-mem-section"><h4>当前活跃记忆 <span class="active-badge">${context.active_memories}</span></h4></div>`;
+    }
+
+    // all memories
+    if (memories.length === 0) {
+      html += `<div class="empty-state">暂无记忆<br><small>对话足够长时，系统会自动压缩并存储记忆</small></div>`;
+    } else {
+      html += `<div style="font-size:12px;color:var(--text2);margin-bottom:10px">共 ${memories.length} 条记忆</div>`;
+      for (const m of memories) {
+        const ts = new Date(m.timestamp).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
+        const tags = (m.keywords || []).map(k => `<span class="mem-tag">${escapeHtml(k)}</span>`).join("");
+        html += `
+          <div class="memory-card">
+            <div class="mem-time">🕒 ${ts}</div>
+            <div class="mem-summary">${escapeHtml(m.summary)}</div>
+            <div class="mem-keywords">${tags}</div>
+            <div class="mem-actions"><button class="mem-del-btn" onclick="deleteMemory('${m.id}')">删除</button></div>
+          </div>`;
+      }
+    }
+    sidebarContent.innerHTML = html;
+  } catch (e) {
+    sidebarContent.innerHTML = `<div class="empty-state">加载失败</div>`;
+  }
+}
+
+async function loadStats() {
+  try {
+    const [stats, context] = await Promise.all([
+      fetch("/api/stats").then(r => r.json()),
+      fetch("/api/context").then(r => r.json()),
+    ]);
+
+    const rows = [
+      ["当前 Tokens", context.current_tokens?.toLocaleString() || "0"],
+      ["最大上下文", context.max_tokens?.toLocaleString() || "32768"],
+      ["使用率", (context.usage_percentage || 0) + "%"],
+      ["压缩阈值", context.compression_threshold?.toLocaleString() || "-"],
+      ["消息数", context.message_count || 0],
+      ["活跃记忆", context.active_memories || 0],
+      ["总压缩次数", context.total_compressions || 0],
+      ["总记忆数", stats.total_memories || 0],
+    ];
+
+    const session = stats.session_stats || {};
+    if (session.total_tokens_compressed) {
+      rows.push(["已压缩 Tokens", session.total_tokens_compressed.toLocaleString()]);
+    }
+    if (session.current_session_turns) {
+      rows.push(["会话轮次", session.current_session_turns]);
+    }
+
+    let html = rows.map(([k, v]) =>
+      `<div class="stat-row"><span class="stat-label">${k}</span><span class="stat-value">${v}</span></div>`
+    ).join("");
+
+    sidebarContent.innerHTML = html;
+  } catch (e) {
+    sidebarContent.innerHTML = `<div class="empty-state">加载失败</div>`;
+  }
+}
+
+// ─── Actions ─────────────────────────────────────
+async function clearContext() {
+  if (!confirm("确定要清空当前对话吗？长期记忆不会被删除。")) return;
+  await fetch("/api/clear", {method: "POST"});
+  messagesEl.innerHTML = `
+    <div class="welcome" id="welcome">
+      <h2>🧠 自适应记忆系统</h2>
+      <p>对话已清空。长期记忆仍然保留，可在侧边栏查看。</p>
+    </div>`;
+  updateMeter({current_tokens: 0, max_tokens: 32768});
+  if (currentTab === "stats") loadStats();
+}
+
+async function deleteMemory(id) {
+  await fetch(`/api/memories/${id}`, {method: "DELETE"});
+  loadMemories();
+}
+
+// ─── Eval Panel ──────────────────────────────────
+let evalRunning = false;
+
+function loadEvalPanel() {
+  sidebarContent.innerHTML = `
+    <div class="eval-controls">
+      <label>对话轮数</label>
+      <input type="number" id="evalRounds" value="20" min="1" max="20000" step="1">
+      <div style="display:flex;gap:6px">
+        <button class="eval-btn" id="evalPreviewBtn" onclick="previewPool()">预览语料</button>
+        <button class="eval-btn" id="evalRegenBtn" onclick="regeneratePool()">重新生成</button>
+        <button class="eval-btn" id="evalStartBtn" onclick="startEval()">开始测试</button>
+      </div>
+    </div>
+    <div id="evalBody">
+      <div class="empty-state">
+        点击「重新生成」随机生成对话语料<br>
+        点击「预览语料」查看已生成的语料<br>
+        点击「开始测试」运行记忆评估
+      </div>
+    </div>`;
+}
+
+let cachedPoolData = null;
+let cachedPoolN = null;
+
+function renderPoolTable(data) {
+  const body = document.getElementById("evalBody");
+  let rows = "";
+  for (const t of data.turns) {
+    rows += `
+      <tr>
+        <td style="text-align:center;color:var(--text2)">${t.index}</td>
+        <td>${escapeHtml(t.message)}</td>
+        <td><code style="color:var(--accent2)">${escapeHtml(t.fact_key)}</code></td>
+        <td style="color:var(--green);font-weight:600">${escapeHtml(t.fact_value)}</td>
+      </tr>`;
+  }
+  body.innerHTML = `
+    <div style="margin-bottom:8px">
+      <span style="font-size:13px;color:var(--text2)">共 <b style="color:var(--text1)">${data.total}</b> 条语料</span>
+    </div>
+    <div class="eval-pool-table-wrap">
+      <table class="eval-pool-table">
+        <thead>
+          <tr>
+            <th style="width:36px">#</th>
+            <th>对话内容</th>
+            <th style="width:90px">事实标签</th>
+            <th style="width:100px">期望值</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function previewPool() {
+  const body = document.getElementById("evalBody");
+  if (cachedPoolData) {
+    renderPoolTable(cachedPoolData);
+  } else {
+    body.innerHTML = `<div class="empty-state">暂无语料数据，请先点击「重新生成」</div>`;
+  }
+}
+
+async function regeneratePool() {
+  const rounds = parseInt(document.getElementById("evalRounds").value) || 20;
+  const btn = document.getElementById("evalRegenBtn");
+  const body = document.getElementById("evalBody");
+
+  btn.disabled = true;
+  btn.textContent = "生成中…";
+  body.innerHTML = `<div class="empty-state">正在随机生成 ${rounds} 条语料…</div>`;
+
+  try {
+    const resp = await fetch(`/api/eval/pool?n=${rounds}`);
+    const data = await resp.json();
+    cachedPoolData = data;
+    cachedPoolN = rounds;
+    renderPoolTable(data);
+  } catch (err) {
+    body.innerHTML = `<div class="empty-state" style="color:var(--red)">请求失败: ${escapeHtml(err.message)}</div>`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = "重新生成";
+}
+
+async function startEval() {
+  if (evalRunning) return;
+  const roundsInput = document.getElementById("evalRounds");
+  const rounds = parseInt(roundsInput.value) || 20;
+  const startBtn = document.getElementById("evalStartBtn");
+  const body = document.getElementById("evalBody");
+
+  evalRunning = true;
+  startBtn.disabled = true;
+  startBtn.textContent = "运行中…";
+
+  body.innerHTML = `
+    <div class="eval-progress">
+      <div class="eval-phase" id="evalPhase">🔄 对话阶段 0/${rounds}</div>
+      <div class="eval-bar-bg"><div class="eval-bar" id="evalBar" style="width:0%"></div></div>
+      <div class="eval-pct" id="evalPct">0%</div>
+    </div>
+    <div class="eval-log" id="evalLog"></div>`;
+
+  const phaseEl = document.getElementById("evalPhase");
+  const barEl   = document.getElementById("evalBar");
+  const pctEl   = document.getElementById("evalPct");
+  const logEl   = document.getElementById("evalLog");
+
+  function log(cls, text) {
+    const d = document.createElement("div");
+    d.className = cls;
+    d.textContent = text;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  try {
+    const resp = await fetch("/api/eval/run", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rounds}),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      let eventType = null;
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith("data: ") && eventType) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            handleEvalSSE(eventType, data, {phaseEl, barEl, pctEl, logEl, body, rounds, log});
+          } catch (_) {}
+          eventType = null;
+        }
+      }
+    }
+  } catch (err) {
+    body.innerHTML += `<div class="empty-state" style="color:var(--red)">请求失败: ${escapeHtml(err.message)}</div>`;
+  }
+
+  evalRunning = false;
+  startBtn.disabled = false;
+  startBtn.textContent = "开始测试";
+}
+
+function handleEvalSSE(event, data, ctx) {
+  const {phaseEl, barEl, pctEl, logEl, body, rounds, log} = ctx;
+
+  switch (event) {
+    case "turn": {
+      const pct = (data.index / rounds * 50).toFixed(1); // 对话占进度 0-50%
+      phaseEl.textContent = `🔄 对话阶段 ${data.index}/${rounds}`;
+      barEl.style.width = pct + "%";
+      pctEl.textContent = pct + "%";
+      const extra = data.compressed ? " ⚡压缩" : "";
+      log("eval-log-turn", `[${data.index}/${rounds}] ${data.message}...${extra}`);
+      if (data.compressed) log("eval-log-compress", `  🗜️ 触发压缩 → 记忆 ${data.memories_stored} 条`);
+      break;
+    }
+    case "eval": {
+      const base = 50;
+      const pct = (base + data.progress / data.total_facts * 50).toFixed(1);
+      phaseEl.textContent = `🧪 评估阶段 ${data.progress}/${data.total_facts}`;
+      barEl.style.width = pct + "%";
+      pctEl.textContent = pct + "%";
+      const icon = data.recalled ? "✅" : "❌";
+      const cls = data.recalled ? "eval-log-ok" : "eval-log-fail";
+      log(cls, `${icon} [${data.fact_key}] 期望「${data.fact_value}」— ${data.recalled ? "命中" : "未命中"}`);
+      break;
+    }
+    case "report": {
+      phaseEl.textContent = "✅ 评估完成";
+      barEl.style.width = "100%";
+      barEl.style.background = "var(--green)";
+      pctEl.textContent = "100%";
+      renderReport(body, data);
+      break;
+    }
+    case "error": {
+      log("eval-log-fail", `⚠️ 错误: ${data.message}`);
+      break;
+    }
+  }
+}
+
+function renderReport(container, rpt) {
+  const scoreClass = rpt.recall_rate >= 100 ? "perfect"
+    : rpt.recall_rate >= 80 ? "good"
+    : rpt.recall_rate >= 50 ? "mid" : "low";
+
+  // Decay bars
+  let decayHtml = "";
+  const decayLabels = {early: "前期", mid: "中期", late: "近期"};
+  const decayColors = {early: "var(--blue)", mid: "var(--accent2)", late: "var(--green)"};
+  for (const [k, label] of Object.entries(decayLabels)) {
+    const d = rpt.decay[k];
+    if (d) {
+      decayHtml += `
+        <div class="eval-decay-col">
+          <div class="eval-decay-pct" style="color:${decayColors[k]}">${d.rate}%</div>
+          <div class="eval-decay-bar-bg">
+            <div class="eval-decay-bar" style="height:${d.rate}%;background:${decayColors[k]}"></div>
+          </div>
+          <div class="eval-decay-label">${label}(${d.count}条)</div>
+        </div>`;
+    }
+  }
+
+  // Result items
+  let resultItems = "";
+  for (const r of rpt.results) {
+    const cls = r.recalled ? "hit" : "miss";
+    const icon = r.recalled ? "✅" : "❌";
+    resultItems += `
+      <div class="eval-result-item ${cls}">
+        <span>${icon}</span>
+        <span class="eval-result-key">轮${r.turn_index} [${r.fact_key}]</span>
+        <span class="eval-result-val">期望「${escapeHtml(r.fact_value)}」</span>
+        ${r.recalled ? "" : `<div class="eval-result-resp">回复: ${escapeHtml(r.response)}</div>`}
+      </div>`;
+  }
+
+  const reportHtml = `
+    <div class="eval-report">
+      <h4>📋 记忆评估报告</h4>
+      <div class="eval-score ${scoreClass}">${rpt.recall_rate}%</div>
+      <div class="eval-meta">
+        <div class="eval-meta-item"><span class="eval-meta-label">对话轮数</span><span class="eval-meta-value">${rpt.rounds}</span></div>
+        <div class="eval-meta-item"><span class="eval-meta-label">测试事实</span><span class="eval-meta-value">${rpt.total_facts}</span></div>
+        <div class="eval-meta-item"><span class="eval-meta-label">回忆成功</span><span class="eval-meta-value" style="color:var(--green)">${rpt.recalled}</span></div>
+        <div class="eval-meta-item"><span class="eval-meta-label">回忆失败</span><span class="eval-meta-value" style="color:var(--red)">${rpt.forgotten}</span></div>
+        <div class="eval-meta-item"><span class="eval-meta-label">压缩次数</span><span class="eval-meta-value">${rpt.compressions}</span></div>
+        <div class="eval-meta-item"><span class="eval-meta-label">存储记忆</span><span class="eval-meta-value">${rpt.memories_stored}</span></div>
+      </div>
+      ${decayHtml ? `<div style="font-size:12px;color:var(--text2);margin-bottom:4px">📉 记忆衰减分析</div><div class="eval-decay">${decayHtml}</div>` : ""}
+      <details class="eval-results-toggle">
+        <summary>📝 详细结果 (${rpt.results.length} 条)</summary>
+        <div style="margin-top:8px">${resultItems}</div>
+      </details>
+    </div>`;
+
+  container.insertAdjacentHTML("beforeend", reportHtml);
+}
+
+// ─── Init ────────────────────────────────────────
+(async () => {
+  try {
+    const ctx = await fetch("/api/context").then(r => r.json());
+    updateMeter(ctx);
+  } catch (_) {}
+})();
+</script>
+</body>
+</html>

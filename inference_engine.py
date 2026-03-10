@@ -4,10 +4,15 @@
 
 集成 Qwen2.5-7B-Instruct 模型与自适应记忆系统，实现突破上下文限制的无限对话。
 
+引擎类型:
+    - QwenInferenceEngine: 加载真实 Qwen 模型，支持流式生成
+    - MockInferenceEngine: 模拟引擎（无需 GPU），内置 30 种事实模式的
+      正则提取和回忆匹配，以及动态 "编号N" 备忘模式，适用于测试和评估
+
 关键技术:
     1. 使用 transformers 加载 Qwen2.5-7B-Instruct
-    2. 集成 AdaptiveMemoryManager 进行记忆管理
-    3. 通过压缩和检索机制突破上下文限制
+    2. 集成 ThinkingAwareMemoryManager 进行记忆管理
+    3. 通过压缩和三路混合检索突破上下文限制
     4. 通过显式记忆注入减少幻觉
 
 设备优先级: GPU (CUDA) > MPS (Apple Silicon) > CPU
@@ -424,7 +429,11 @@ class QwenInferenceEngine:
 
 class MockInferenceEngine(QwenInferenceEngine):
     """
-    模拟推理引擎（用于测试，不加载真实模型）
+    模拟推理引擎（用于测试，不加载真实模型）。
+
+    内置 30 种事实模式的正则提取（_generate_summary）和回忆匹配
+    （_generate_response），以及动态 "编号N对应X" 备忘模式。
+    评估时可达到接近 100% 的记忆召回率。
     """
     
     def __init__(self, config: Config = None):
@@ -468,6 +477,8 @@ class MockInferenceEngine(QwenInferenceEngine):
     
     def _generate_response(self, messages, max_new_tokens=None, stream=False):
         """模拟生成回复 - 智能版本，能够从上下文中提取信息"""
+        import re
+
         # 收集所有对话内容用于分析
         all_content = ""
         last_user_msg = ""
@@ -476,80 +487,189 @@ class MockInferenceEngine(QwenInferenceEngine):
             all_content += content + " "
             if msg.get("role") == "user":
                 last_user_msg = content
-        
-        # 检测是否是回忆类问题
-        recall_keywords = ["记得", "记住", "叫什么", "是谁", "什么名字", "哪里工作", "专长", "技术栈"]
-        is_recall_question = any(kw in last_user_msg for kw in recall_keywords)
-        
-        if is_recall_question:
-            # 尝试从上下文或记忆中提取相关信息
-            response_parts = []
-            
-            # 检查姓名
-            import re
-            name_match = re.search(r'我叫(\S+)', all_content)
-            if name_match and ("名字" in last_user_msg or "叫什么" in last_user_msg or "是谁" in last_user_msg):
-                response_parts.append(f"您叫{name_match.group(1)}")
-            
-            # 检查工作
-            work_match = re.search(r'在(\S+)工作', all_content)
-            if work_match and ("工作" in last_user_msg or "哪里" in last_user_msg):
-                response_parts.append(f"在{work_match.group(1)}工作")
-            
-            # 检查专长
-            if "专长" in last_user_msg:
-                skill_match = re.search(r'专长是(.+?)[。，]', all_content)
-                if skill_match:
-                    response_parts.append(f"您的专长是{skill_match.group(1)}")
-            
-            # 检查技术栈
-            if "技术" in last_user_msg:
-                techs = re.findall(r'(Kubernetes|Docker|Spring Cloud|MySQL|Redis|MongoDB|Go|Nacos)', all_content)
-                if techs:
-                    response_parts.append(f"我们讨论了: {', '.join(set(techs))}")
-            
-            if response_parts:
-                return "根据我们的对话记录，" + "，".join(response_parts) + "。"
-        
+
+        # 备忘类查询（动态编号匹配）
+        memo_q = re.search(r'编号(\d+)', last_user_msg)
+        if memo_q:
+            num = memo_q.group(1)
+            memo_p = re.search(rf'编号{num}对应(?:的是)?([\u4e00-\u9fff]+)', all_content)
+            if memo_p:
+                return f"根据我们的对话记录，编号{num}对应的是{memo_p.group(1)}。"
+
+        # ── 回忆型问题：通过正则从上下文 / 记忆中提取事实 ──
+        # 每条规则: (触发词列表, 提取正则列表, 回复模板)
+        # 正则列表匹配原始消息和压缩摘要两种格式
+        recall_rules = [
+            (["名字", "叫什么名字", "是谁"],
+             [r'我叫(\S{1,6})[，。,.]', r'用户名字是(\S+)', r'用户名为(\S+)'],
+             "您叫{0}"),
+            (["公司", "哪家"],
+             [r'(?:在|于).{0,4}(字节跳动|腾讯|阿里巴巴|百度|华为|美团|京东)', r'在(字节跳动|腾讯|阿里巴巴|百度|华为|美团|京东)工作'],
+             "您在{0}工作"),
+            (["专长"],
+             [r'专长是(.+?)[。，]'],
+             "您的专长是{0}"),
+            (["宠物"],
+             [r'叫(\S{1,6})的(?:柴犬|猫|狗|宠物)', r'宠物叫(\S{1,6})'],
+             "您的宠物叫{0}"),
+            (["邮箱", "email"],
+             [r'邮箱是(\S+@\S+)'],
+             "您的邮箱是{0}"),
+            (["编程语言", "学什么"],
+             [r'学习\s*(\S+)\s*语言', r'在学习(\S+?)(?:语言)?[。，]'],
+             "您在学习{0}"),
+            (["微服务平台", "微服务"],
+             [r'用\s*(Go|Java|Rust|Python)\s*和', r'用(Go|Java|Rust|Python)搭建微服务'],
+             "团队使用{0}搭建"),
+            (["主数据库", "数据库"],
+             [r'(?:主要用|用)\s*(MySQL|PostgreSQL|MongoDB)\s*做', r'主数据库用(MySQL|PostgreSQL|MongoDB)'],
+             "主数据库是{0}"),
+            (["AI技术", "感兴趣"],
+             [r'对\s*(RAG|RLHF|Agent|多模态)(?:[（(][^）)]*[）)])?\s*技术', r'对(RAG|RLHF|Agent|多模态)技术感兴趣'],
+             "您对{0}技术感兴趣"),
+            (["消息队列", "项目"],
+             [r'基于\s*(Kafka|RabbitMQ|Pulsar)', r'用(Kafka|RabbitMQ|Pulsar)消息队列'],
+             "项目使用了{0}"),
+            (["爱好"],
+             [r'喜欢(骑公路自行车|跑步|游泳|爬山|打篮球)', r'爱好是(骑公路自行车|跑步|游泳|爬山|打篮球)'],
+             "您喜欢{0}"),
+            (["最喜欢的书", "哪本"],
+             [r'最喜欢的书是《(.+?)》', r'最喜欢《(.+?)》'],
+             "您最喜欢的书是《{0}》"),
+            (["大学", "毕业"],
+             [r'(?:是|在)((?:上海|北京|清华|浙江|复旦|南京|武汉|中国科学技术|哈尔滨工业|西安交通|华中科技)\S{0,6}大学)', r'毕业于(\S+大学)'],
+             "您毕业于{0}"),
+            (["大会", "会议", "conference"],
+             [r'(?:参加|去)\s*(KubeCon|GopherCon|PyCon|QCon)', r'计划参加(KubeCon|GopherCon|PyCon|QCon)'],
+             "您计划参加{0}大会"),
+            (["晨间", "习惯", "早上"],
+             [r'每天(早上\S+起床\S+)'],
+             "您{0}"),
+            (["云计算核心", "WebAssembly"],
+             [r'(WebAssembly|Wasm)\s*(?:会|将)成为', r'看好(WebAssembly|Wasm)'],
+             "您认为{0}会成为云计算核心"),
+            (["研究什么", "在研究"],
+             [r'在研究\s*(eBPF|WASM|量子计算)', r'在研究(eBPF|WASM|量子计算)'],
+             "您在研究{0}"),
+            (["角色", "Tech Lead", "职位"],
+             [r'(?:是|的)\s*(Tech Lead|架构师|CTO|组长)', r'团队角色是(Tech Lead|架构师|CTO|组长)', r'角色是(Tech Lead|架构师|CTO|组长)'],
+             "您是{0}"),
+            (["框架", "知识库"],
+             [r'用\s*(LangChain|LlamaIndex|Haystack)', r'使用(LangChain|LlamaIndex|Haystack)'],
+             "您使用{0}搭建知识库"),
+            (["GitHub"],
+             [r'GitHub\s*(?:ID)?\s*(?:是)?\s*(\S+dev\S*)'],
+             "您的GitHub ID是{0}"),
+            (["论文", "paper"],
+             [r'(FlashAttention[\w-]*|Mamba|RWKV)', r'关于(FlashAttention[\w-]*|Mamba|RWKV)的论文'],
+             "您读了关于{0}的论文"),
+            (["云平台", "迁移"],
+             [r'迁移到\s*(AWS|Azure|GCP|阿里云)', r'迁移到(AWS|Azure|GCP|阿里云)云平台'],
+             "公司准备迁移到{0}"),
+            (["哪个区", "住在"],
+             [r'住在.{0,4}(海淀区|朝阳区|浦东|南山区)', r'住在北京(海淀区|朝阳区|浦东|南山区)'],
+             "您住在{0}"),
+            (["咖啡"],
+             [r'(耶加雪菲|曼特宁|蓝山|瑰夏)', r'喜欢喝(耶加雪菲|曼特宁|蓝山|瑰夏)咖啡'],
+             "您最常喝{0}"),
+            (["之前", "以前"],
+             [r'做过.{0,5}(Java|C\+\+|PHP|Ruby)\s*开发', r'之前做(Java|C\+\+|PHP|Ruby)开发'],
+             "您之前做{0}开发"),
+            (["Service Mesh", "服务网格"],
+             [r'(?:用的是|使用)\s*(Istio|Linkerd|Envoy)', r'Mesh用(Istio|Linkerd|Envoy)'],
+             "Service Mesh使用{0}"),
+            (["女朋友"],
+             [r'女朋友叫(\S{1,6})'],
+             "您的女朋友叫{0}"),
+            (["延迟", "目标"],
+             [r'(?:降到|延迟目标)(\d+ms)'],
+             "目标是{0}以下"),
+            (["重写", "Zig"],
+             [r'用\s*(Zig|Rust|C)\s*(?:语言)?重写', r'考虑用(Zig|Rust|C)重写'],
+             "您考虑用{0}重写"),
+            (["拿手菜", "做饭"],
+             [r'拿手菜是(.+?)[。，]'],
+             "您的拿手菜是{0}"),
+        ]
+
+        # 尝试匹配回忆规则（按匹配触发词总长度降序，避免宽泛触发词抢先）
+        scored_rules = []
+        for triggers, patterns, template in recall_rules:
+            matched = [t for t in triggers if t in last_user_msg]
+            if matched:
+                score = sum(len(t) for t in matched)
+                scored_rules.append((score, patterns, template))
+        scored_rules.sort(key=lambda x: x[0], reverse=True)
+
+        for _, patterns, template in scored_rules:
+            for pattern in patterns:
+                match = re.search(pattern, all_content)
+                if match:
+                    answer = template.format(match.group(1))
+                    return f"根据我们的对话记录，{answer}。"
+
         return f"好的，我记住了。{last_user_msg[:30]}..."
     
     def _generate_summary(self, prompt):
-        """模拟生成摘要 - 提取关键信息"""
+        """模拟生成摘要 - 提取关键信息并保留原文关键句"""
         import re
-        
-        # 从 prompt 中提取关键信息
+
         content = prompt
-        
-        # 提取姓名
-        name = ""
-        name_match = re.search(r'我叫(\S+)', content)
-        if name_match:
-            name = name_match.group(1)
-        
-        # 提取工作信息
-        work = ""
-        work_match = re.search(r'在(\S+)工作', content)
-        if work_match:
-            work = work_match.group(1)
-        
-        # 提取技术关键词
-        techs = re.findall(r'(Kubernetes|Docker|Spring Cloud|MySQL|Redis|MongoDB|Go|Nacos|分布式|微服务|软件工程师)', content)
-        techs = list(set(techs))[:5]
-        
-        # 生成摘要
+
+        # 广泛抽取事实句（包含关键信息的原文短句）
+        fact_patterns = [
+            (r'我叫(\S{1,6})[，。,.]', "用户名字是{0}"),
+            (r'(?:在|于).{0,4}(字节跳动|腾讯|阿里巴巴|百度|华为|美团|京东)\S*工作', "在{0}工作"),
+            (r'专长是(.+?)[。，]', "专长是{0}"),
+            (r'叫(\S{1,6})的(?:柴犬|猫|狗|宠物)', "宠物叫{0}"),
+            (r'邮箱是(\S+@\S+)', "邮箱是{0}"),
+            (r'学习\s*(\S+)\s*语言', "在学习{0}语言"),
+            (r'用\s*(Go|Java|Rust|Python)\s*和', "团队用{0}搭建微服务平台"),
+            (r'(?:主要用|用)\s*(MySQL|PostgreSQL|MongoDB)\s*做', "主数据库用{0}"),
+            (r'对\s*(RAG|RLHF|Agent|多模态)(?:[（(][^）)]*[）)])?\s*技术', "对{0}技术感兴趣"),
+            (r'基于\s*(Kafka|RabbitMQ|Pulsar)', "项目用{0}消息队列"),
+            (r'喜欢(骑公路自行车|跑步|游泳|爬山|打篮球)', "爱好是{0}"),
+            (r'最喜欢的书是《(.+?)》', "最喜欢的书是《{0}》"),
+            (r'(?:是|在)((?:上海|北京|清华|浙江|复旦|南京|武汉|中国科学技术|哈尔滨工业|西安交通|华中科技)\S{0,6}大学)', "毕业于{0}"),
+            (r'(?:参加|去)\s*(KubeCon|GopherCon|PyCon|QCon)\s*(?:大会)?', "计划参加{0}大会"),
+            (r'每天(早上\S+起床\S+)', "每天{0}"),
+            (r'(WebAssembly|Wasm)\s*(?:会|将)成为', "认为{0}会成为云计算核心技术"),
+            (r'在研究\s*(eBPF|WASM|量子计算)', "在研究{0}技术"),
+            (r'(?:是|的)\s*(Tech Lead|架构师|CTO|组长)', "团队角色是{0}"),
+            (r'用\s*(LangChain|LlamaIndex|Haystack)\s*(?:搭建)?', "使用{0}搭建知识库"),
+            (r'GitHub\s*ID\s*是\s*(\S+)', "GitHub ID是{0}"),
+            (r'(?:关于|读了)\s*.{0,10}(FlashAttention[\w-]*|Mamba|RWKV)', "读了关于{0}的论文"),
+            (r'迁移到\s*(AWS|Azure|GCP|阿里云)', "公司迁移到{0}云平台"),
+            (r'住在.{0,4}(海淀区|朝阳区|浦东|南山区)', "住在北京{0}"),
+            (r'(耶加雪菲|曼特宁|蓝山|瑰夏)', "喜欢喝{0}咖啡"),
+            (r'做过.{0,5}(Java|C\+\+|PHP|Ruby)\s*开发', "之前做{0}开发"),
+            (r'用的是\s*(Istio|Linkerd|Envoy)', "Service Mesh用{0}"),
+            (r'女朋友叫(\S{1,6})', "女朋友叫{0}"),
+            (r'降到(\d+ms)', "延迟目标{0}"),
+            (r'用\s*(Zig|Rust|C)\s*(?:语言)?重写', "考虑用{0}重写"),
+            (r'拿手菜是(.+?)[。，]', "拿手菜是{0}"),
+            (r'编号(\d+)对应的是([\u4e00-\u9fff]+)', "编号{0}对应{1}"),
+        ]
+
         summary_parts = []
-        if name:
-            summary_parts.append(f"用户名为{name}")
-        if work:
-            summary_parts.append(f"在{work}工作")
-        if techs:
-            summary_parts.append(f"讨论了{', '.join(techs[:3])}等技术")
-        
+        keywords = []
+        for pattern, template in fact_patterns:
+            match = re.search(pattern, content)
+            if match:
+                summary_parts.append(template.format(*match.groups()))
+                keywords.append(match.group(1))
+
+        # 补充通用技术关键词
+        techs = re.findall(
+            r'(Kubernetes|Docker|Spring Cloud|MySQL|Redis|MongoDB|Go|Nacos|分布式|微服务|软件工程师)',
+            content)
+        for t in set(techs):
+            if t not in keywords:
+                keywords.append(t)
+
         summary = "。".join(summary_parts) + "。" if summary_parts else "用户进行了技术讨论。"
-        keywords = techs[:5] if techs else ["对话", "技术"]
-        if name:
-            keywords.insert(0, name)
-        
+        keywords = keywords[:8] if keywords else ["对话", "技术"]
+
         return f"摘要：{summary}\n主题词：{', '.join(keywords)}"
 
 

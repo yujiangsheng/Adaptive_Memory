@@ -6,8 +6,9 @@
 
 核心参数:
     - compression_threshold: 触发压缩的阈值 (默认 0.75，即 3/4)
-    - max_context_length: 模型最大上下文长度
-    - preserve_recent_turns: 压缩时保留的最近对话轮数
+    - max_context_length: 模型最大上下文长度 (默认 32768)
+    - preserve_recent_turns: 压缩时保留的最近对话轮数 (默认 2)
+    - relevance_threshold: 记忆相关性阈值 (默认 0.6)
 
 Usage:
     >>> from config import Config, default_config
@@ -20,6 +21,7 @@ Usage:
     >>> config = Config()
     >>> config.model.max_context_length = 16384
     >>> config.model.compression_threshold = 0.8
+    >>> config.memory.relevance_threshold = 0.3
 
 Author: Jiangsheng Yu
 """

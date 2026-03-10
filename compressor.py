@@ -300,48 +300,19 @@ class ContextCompressor:
         return self.config.compression_prompt_template.format(content=text)
 
 
-class IncrementalCompressor(ContextCompressor):
-    """
-    增量压缩器
-    
-    支持在对话过程中逐步压缩，而不是一次性压缩所有内容
-    """
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._pending_messages: List[Message] = []
-        self._compression_history: List[CompressionResult] = []
-    
-    def add_message(self, message: Message):
-        """添加待压缩的消息"""
-        self._pending_messages.append(message)
-    
-    def get_pending_count(self) -> int:
-        """获取待压缩消息数量"""
-        return len(self._pending_messages)
-    
-    def compress_pending(self) -> Optional[CompressionResult]:
-        """压缩所有待处理的消息"""
-        if not self._pending_messages:
-            return None
-        
-        result = self.compress_messages(self._pending_messages)
-        
-        if result.success:
-            self._compression_history.append(result)
-            self._pending_messages = []
-        
-        return result
-    
-    def get_compression_history(self) -> List[CompressionResult]:
-        """获取压缩历史"""
-        return self._compression_history.copy()
+# ─── 工厂函数 ────────────────────────────────────────────────
 
-
-# 便捷函数
 def create_compressor(
     summarize_fn: Callable[[str], str] = None,
-    config: CompressionConfig = None
+    config: CompressionConfig = None,
 ) -> ContextCompressor:
-    """创建压缩器实例"""
+    """创建压缩器实例。
+
+    Args:
+        summarize_fn: 可选的自定义摘要函数（通常由 LLM 提供）。
+        config:       压缩配置，缺省使用 ``default_config.compression``。
+
+    Returns:
+        ContextCompressor 实例。
+    """
     return ContextCompressor(config=config, summarize_fn=summarize_fn)
